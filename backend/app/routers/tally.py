@@ -1,4 +1,7 @@
-"""理货记录接口：维护理货记录，覆盖开始理货、提交核对、登记溢短等动作。"""
+"""理货记录接口：维护理货记录，覆盖开始理货、提交核对、登记溢短等动作。
+
+批次理货：同一条船的箱位整组进待核区、逐条核对、溢短单列、打回重来。
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -6,14 +9,68 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.tally import TallyService
+from app.services.tally import TallyBatchService, TallyService
 
 router = APIRouter(prefix="/api/tally", tags=["理货记录"])
 
 service = TallyService()
+batch_service = TallyBatchService()
 
 LIST_FIELDS = ["理货编号", "对应船舶", "箱量核对", "残损记录", "溢短记录", "理货人员", "理货时间", "理货状态"]
 STATUSES = ["待理货", "理货中", "已核对", "有溢短"]
+
+
+@router.get("/batches", response_model=PageResult[dict])
+def list_batches(
+    keyword: str | None = Query(default=None, description="按批次号或对应船舶检索"),
+    status: str | None = Query(default=None, description="待核中、溢短待处理、已核完成"),
+    page: int = 1,
+    size: int = 20,
+) -> PageResult[dict]:
+    """理货批次列表：每批带箱量汇总，溢短数量一眼能看到。"""
+    if size > 200:
+        raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
+    items, total = batch_service.list_batches(keyword=keyword, status=status, page=page, size=size)
+    return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.post("/batches", response_model=ActionResult)
+def create_batch(payload: EntryPayload) -> ActionResult:
+    """整组登记：同一条船的箱位多选后一次进待核区；同一批次号重复提交只认第一次。"""
+    batch, message, duplicated = batch_service.create_batch(payload.values)
+    if batch is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=batch)
+
+
+@router.get("/batches/{batch_id}", response_model=dict)
+def get_batch(batch_id: int) -> dict:
+    """批次详情：条目、汇总与自动挑出的溢短清单一并返回。"""
+    batch = batch_service.get_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail=f"理货批次 {batch_id} 不存在或已归档")
+    return batch
+
+
+@router.post("/batches/{batch_id}/verify", response_model=ActionResult)
+def verify_batch(batch_id: int, payload: EntryPayload) -> ActionResult:
+    """提交核对：残损统一录、箱量逐条对；一致的转已核，溢短的自动单列。"""
+    batch, message = batch_service.submit_verify(batch_id, payload.values)
+    if batch is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=batch)
+
+
+@router.post("/batches/{batch_id}/reject", response_model=ActionResult)
+def reject_batch_items(batch_id: int, payload: EntryPayload) -> ActionResult:
+    """打回指定条目：退回待核区等重来，已核完的不动。"""
+    positions = payload.values.get("箱位")
+    if not isinstance(positions, list):
+        return ActionResult(ok=False, message="请用「箱位」字段传入要打回的箱位编号列表")
+    batch, message = batch_service.reject_items(batch_id, positions)
+    if batch is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=batch)
 
 
 @router.get("", response_model=PageResult[dict])
@@ -28,6 +85,13 @@ def list_entries(
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出理货记录清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "tally", "total": total, "items": items}
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -56,10 +120,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出理货记录清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "tally", "total": total, "items": items}

@@ -76,3 +76,16 @@ npm run dev
   `backend/app/routers/<模块>.py`，业务规则在 `backend/app/services/<模块>.py`。
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
+
+## 理货批次流程
+
+理货记录在单条登记之外支持整组批次作业（`backend/app/services/tally.py` 的
+`TallyBatchService`，接口挂在 `/api/tally/batches` 下）：
+
+- `POST /api/tally/batches` 整组登记：同一条船的箱位多选后一次进待核区；
+  批次号是幂等键，同一批重复提交只认第一次。
+- `POST /api/tally/batches/{id}/verify` 提交核对：残损情况统一录（空着不许转入已核）、
+  箱量逐条填；核对汇总箱量必须与明细合计一致；核对一致的条目转已核，
+  溢短条目自动挑出单列（批次详情里的 `溢短条目`）。
+- `POST /api/tally/batches/{id}/reject` 打回：指定条目退回待核区等重来，
+  已核完的条目不动；溢短条目要先打回才能重新核对。
