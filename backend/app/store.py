@@ -28,8 +28,11 @@ class Store:
         return None
 
     def overview(self) -> dict[str, object]:
+        # 带下划线后缀的是业务模块的支撑表（如理货箱位、批次），不计入看板卡片
         modules: list[dict[str, object]] = []
         for name in self.module_names():
+            if name.endswith("_slot") or name.endswith("_batch"):
+                continue
             rows = self.rows(name)
             modules.append({
                 "name": name,
